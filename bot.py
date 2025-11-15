@@ -9,7 +9,7 @@ import os
 logging.basicConfig(level=logging.INFO)
  
 BOT_TOKEN = '@BotFather'
-OWNER_ID = @userinfobot
+GROUP_ID = -100..... 
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -20,19 +20,20 @@ user_messages = {}
 blocked_users = set()
 user_info = {}
 username_to_id = {}
-
+user_topics = {} 
 def save_data():
     data = {
         'blocked_users': list(blocked_users),
         'user_info': user_info,
-        'username_to_id': username_to_id
+        'username_to_id': username_to_id,
+        'user_topics': user_topics
     }
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     logging.info("Данные сохранены")
 
 def load_data():
-    global blocked_users, user_info, username_to_id
+    global blocked_users, user_info, username_to_id, user_topics
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
@@ -42,20 +43,88 @@ def load_data():
             user_info = {int(k): v for k, v in user_info.items()}
             username_to_id = data.get('username_to_id', {})
             username_to_id = {k: int(v) for k, v in username_to_id.items()}
-            logging.info("Данные загружены")
+            user_topics = data.get('user_topics', {})
+            user_topics = {int(k): int(v) for k, v in user_topics.items()}
+            logging.info(f"Данные загружены. Топики: {user_topics}")
         except Exception as e:
             logging.error(f"Ошибка загрузки данных: {e}")
 
+async def get_or_create_topic(user_id: int, username: str) -> int:
+    user_id = int(user_id)
+    
+    if user_id in user_topics:
+        logging.info(f"Топик для пользователя {user_id} уже существует: {user_topics[user_id]}")
+        return user_topics[user_id]
+    
+    try:
+        topic_name = f"@{username}" if username != "без username" else f"User {user_id}"
+        forum_topic = await bot.create_forum_topic(GROUP_ID, topic_name)
+        topic_id = forum_topic.message_thread_id
+        
+        user_topics[user_id] = topic_id
+        save_data()
+        
+        logging.info(f"Создан топик {topic_name} (ID: {topic_id}) для пользователя {user_id}")
+        logging.info(f"Текущие топики: {user_topics}")
+        return topic_id
+    except Exception as e:
+        logging.error(f"Ошибка создания топика: {e}")
+        raise
+
+@dp.message(Command("getid"))
+async def get_chat_id(message: Message):
+    chat_info = f"""
+╔════════════════════════════════════════╗
+║         ИНФОРМАЦИЯ О ЧАТЕ              ║
+╠════════════════════════════════════════╣
+║ 📍 Chat ID: {message.chat.id}
+║ 📍 Chat Type: {message.chat.type}
+║ 📍 Chat Title: {message.chat.title if message.chat.title else 'Личные сообщения'}
+╠════════════════════════════════════════╣
+"""
+    
+    if message.chat.type in ['group', 'supergroup']:
+        chat_info += f"""║ ✅ Это {'супер' if message.chat.type == 'supergroup' else ''}группа!
+║ 
+║  Скопируйте этот ID:
+║ GROUP_ID = {message.chat.id}
+║ 
+║ Вставьте в строку 12 файла bot.py
+╚════════════════════════════════════════╝"""
+    else:
+        chat_info += """║ ❌ Это не группа!
+║ Используйте команду /getid в группе
+╚════════════════════════════════════════╝"""
+    
+    await message.answer(chat_info)
+    print(chat_info) 
+
 @dp.message(Command("start"))
 async def start_handler(message: Message):
-    if message.from_user.id == OWNER_ID:
-        await message.answer("Панель владельца активна\n\nКоманды:\n/block - заблокировать (reply на сообщение)\n/unblock - разблокировать (reply на сообщение)\n\nЧтобы написать пользователю:\n@username текст сообщения")
+    if message.chat.id == GROUP_ID:
+        await message.answer("Панель управления активна\n\nКоманды:\n/block - заблокировать (reply на сообщение)\n/unblock - разблокировать (reply на сообщение)\n/topics - показать все топики\n\nЧтобы ответить пользователю, просто напишите в его топик")
     else:
         await message.answer("Привет! Отправь мне свое сообщение")
 
+@dp.message(Command("topics"))
+async def show_topics_handler(message: Message):
+    if message.chat.id != GROUP_ID:
+        return
+    
+    if not user_topics:
+        await message.answer("Топиков пока нет")
+        return
+    
+    topics_info = "📋 **Активные топики:**\n\n"
+    for user_id, topic_id in user_topics.items():
+        username = user_info.get(user_id, "неизвестный")
+        topics_info += f"👤 @{username} (ID: {user_id}) → Топик ID: {topic_id}\n"
+    
+    await message.answer(topics_info, parse_mode="Markdown")
+
 @dp.message(Command("block"))
 async def block_handler(message: Message):
-    if message.from_user.id != OWNER_ID:
+    if message.chat.id != GROUP_ID:
         return
     
     if not message.reply_to_message:
@@ -74,7 +143,7 @@ async def block_handler(message: Message):
 
 @dp.message(Command("unblock"))
 async def unblock_handler(message: Message):
-    if message.from_user.id != OWNER_ID:
+    if message.chat.id != GROUP_ID:
         return
     
     if not message.reply_to_message:
@@ -94,37 +163,30 @@ async def unblock_handler(message: Message):
     else:
         await message.answer("Не удалось найти пользователя")
 
-@dp.message(F.chat.id == OWNER_ID)
-async def owner_message_handler(message: Message):
-    if message.reply_to_message:
+@dp.message(F.chat.id == GROUP_ID)
+async def group_message_handler(message: Message):
+    if message.text and message.text.startswith('/'):
+        return
+
+    if not message.message_thread_id:
+        return
+    
+    user_id = None
+
+    for uid, topic_id in user_topics.items():
+        if topic_id == message.message_thread_id:
+            user_id = uid
+            logging.info(f"Найден пользователь {uid} для топика {topic_id}")
+            break
+
+    if not user_id and message.reply_to_message:
         msg_id = message.reply_to_message.message_id
-        if msg_id not in user_messages:
-            return
-        
-        user_id = user_messages[msg_id]
-    elif message.text and message.text.startswith('@'):
-        parts = message.text.split(' ', 1)
-        if len(parts) < 2:
-            await message.answer("Формат: @username текст сообщения")
-            return
-        
-        username = parts[0][1:]
-        text = parts[1]
-        
-        if username not in username_to_id:
-            await message.answer(f"Пользователь @{username} не найден")
-            return
-        
-        user_id = username_to_id[username]
-        
-        try:
-            await bot.send_message(user_id, text)
-            await message.answer(f"Сообщение отправлено @{username}")
-            return
-        except Exception as e:
-            await message.answer(f"Ошибка отправки: {e}")
-            return
-    else:
+        if msg_id in user_messages:
+            user_id = user_messages[msg_id]
+            logging.info(f"Найден пользователь {user_id} по reply")
+    
+    if not user_id:
+        logging.warning(f"Не найден пользователь для топика {message.message_thread_id}")
         return
     
     try:
@@ -145,13 +207,16 @@ async def owner_message_handler(message: Message):
         elif message.sticker:
             await bot.send_sticker(user_id, message.sticker.file_id)
         
-        await message.answer("Ответ отправлен")
+        if message.message_thread_id:
+            user_messages[message.message_id] = user_id
+        
+        await message.answer("✅ Отправлено")
     except Exception as e:
-        await message.answer(f"Ошибка отправки: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message()
 async def user_message_handler(message: Message):
-    if message.from_user.id == OWNER_ID:
+    if message.chat.id == GROUP_ID:
         return
     
     if message.from_user.id in blocked_users:
@@ -167,28 +232,24 @@ async def user_message_handler(message: Message):
         save_data()
     
     try:
+        topic_id = await get_or_create_topic(user_id, username)
+        
         if message.text:
-            sent = await bot.send_message(OWNER_ID, f"Новое сообщение от @{username}:\n\n{message.text}")
+            sent = await bot.send_message(GROUP_ID, message.text, message_thread_id=topic_id)
         elif message.photo:
-            caption = f"Новое фото от @{username}{f': {message.caption}' if message.caption else ''}"
-            sent = await bot.send_photo(OWNER_ID, message.photo[-1].file_id, caption=caption)
+            sent = await bot.send_photo(GROUP_ID, message.photo[-1].file_id, caption=message.caption, message_thread_id=topic_id)
         elif message.video:
-            caption = f"Новое видео от @{username}{f': {message.caption}' if message.caption else ''}"
-            sent = await bot.send_video(OWNER_ID, message.video.file_id, caption=caption)
+            sent = await bot.send_video(GROUP_ID, message.video.file_id, caption=message.caption, message_thread_id=topic_id)
         elif message.voice:
-            sent = await bot.send_voice(OWNER_ID, message.voice.file_id, caption=f"Новое голосовое от @{username}")
+            sent = await bot.send_voice(GROUP_ID, message.voice.file_id, message_thread_id=topic_id)
         elif message.video_note:
-            sent = await bot.send_video_note(OWNER_ID, message.video_note.file_id)
-            await bot.send_message(OWNER_ID, f"Новое видео-сообщение от @{username}")
+            sent = await bot.send_video_note(GROUP_ID, message.video_note.file_id, message_thread_id=topic_id)
         elif message.document:
-            caption = f"Новый файл от @{username}{f': {message.caption}' if message.caption else ''}"
-            sent = await bot.send_document(OWNER_ID, message.document.file_id, caption=caption)
+            sent = await bot.send_document(GROUP_ID, message.document.file_id, caption=message.caption, message_thread_id=topic_id)
         elif message.audio:
-            caption = f"Новое аудио от @{username}{f': {message.caption}' if message.caption else ''}"
-            sent = await bot.send_audio(OWNER_ID, message.audio.file_id, caption=caption)
+            sent = await bot.send_audio(GROUP_ID, message.audio.file_id, caption=message.caption, message_thread_id=topic_id)
         elif message.sticker:
-            sent = await bot.send_sticker(OWNER_ID, message.sticker.file_id)
-            await bot.send_message(OWNER_ID, f"Новый стикер от @{username}")
+            sent = await bot.send_sticker(GROUP_ID, message.sticker.file_id, message_thread_id=topic_id)
         else:
             return
         
@@ -197,6 +258,7 @@ async def user_message_handler(message: Message):
         
     except Exception as e:
         logging.error(f"Error: {e}")
+        await message.answer("Произошла ошибка при отправке сообщения")
 
 async def main():
     load_data()
